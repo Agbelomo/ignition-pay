@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useEffect, useState } from 'react'
 
 export interface RateLimitStatus {
   remaining: number
@@ -20,16 +20,41 @@ const rateLimitState = {
   listeners: new Set<(status: RateLimitStatus) => void>(),
 }
 
-function notifyListeners() {
-  const status: RateLimitStatus = {
+function currentStatus(): RateLimitStatus {
+  return {
     remaining: rateLimitState.remaining,
     limit: rateLimitState.limit,
     resetAt: rateLimitState.resetAt,
     isNearLimit: rateLimitState.remaining / rateLimitState.limit <= WARNING_THRESHOLD,
     isRateLimited: rateLimitState.remaining <= 0,
   }
+}
+
+function notifyListeners() {
+  const status = currentStatus()
   rateLimitState.listeners.forEach((listener) => listener(status))
 }
+
+/** Restores the full quota once the reset time has passed. Returns true if it did. */
+function expireIfElapsed(): boolean {
+  if (rateLimitState.resetAt && Date.now() > rateLimitState.resetAt) {
+    rateLimitState.remaining = rateLimitState.limit
+    rateLimitState.resetAt = null
+    notifyListeners()
+    return true
+  }
+  return false
+}
+
+/** Test helper: puts the shared rate-limit state back to its defaults. */
+export function resetRateLimitState(): void {
+  rateLimitState.remaining = DEFAULT_LIMIT
+  rateLimitState.limit = DEFAULT_LIMIT
+  rateLimitState.resetAt = null
+  notifyListeners()
+}
+
+const RESET_CHECK_INTERVAL_MS = 1000
 
 /**
  * Updates rate limit state from response headers
@@ -39,47 +64,43 @@ export function updateRateLimitFromHeaders(headers: Headers): void {
   const limit = headers.get('x-ratelimit-limit')
   const reset = headers.get('x-ratelimit-reset')
 
-  if (remaining !== null) rateLimitState.remaining = parseInt(remaining, 10)
-  if (limit !== null) rateLimitState.limit = parseInt(limit, 10)
-  if (reset !== null) {
-    const resetTime = parseInt(reset, 10)
-    rateLimitState.resetAt = resetTime > 0 ? resetTime * 1000 : Date.now() + (resetTime * 1000)
+  // Ignore malformed header values rather than storing NaN.
+  const remainingValue = remaining === null ? NaN : parseInt(remaining, 10)
+  const limitValue = limit === null ? NaN : parseInt(limit, 10)
+  const resetValue = reset === null ? NaN : parseInt(reset, 10)
+
+  if (!Number.isNaN(remainingValue)) rateLimitState.remaining = remainingValue
+  if (!Number.isNaN(limitValue)) rateLimitState.limit = limitValue
+  if (!Number.isNaN(resetValue)) {
+    rateLimitState.resetAt = resetValue > 0 ? resetValue * 1000 : Date.now() + (resetValue * 1000)
   }
 
   notifyListeners()
 }
 
 /**
- * Hook to track and display API rate limit status
+ * Hook to track and display API rate limit status.
+ *
+ * Subscribes to the shared state, so every response's headers update the
+ * indicator immediately (a burst of requests can't leave it showing the
+ * pre-burst value), and re-checks the reset time on a timer so the quota
+ * refills even when no further requests are made.
  */
 export function useRateLimit(): RateLimitStatus {
-  const [status, setStatus] = useState<RateLimitStatus>({
-    remaining: rateLimitState.remaining,
-    limit: rateLimitState.limit,
-    resetAt: rateLimitState.resetAt,
-    isNearLimit: rateLimitState.remaining / rateLimitState.limit <= WARNING_THRESHOLD,
-    isRateLimited: rateLimitState.remaining <= 0,
-  })
+  const [status, setStatus] = useState<RateLimitStatus>(currentStatus)
 
-  const listenerRef = useRef<(status: RateLimitStatus) => void>()
-
-  useCallback(() => {
-    listenerRef.current = setStatus
+  useEffect(() => {
     rateLimitState.listeners.add(setStatus)
+    // Catch anything that changed between the first render and subscribing.
+    setStatus(currentStatus())
+
+    const timer = setInterval(expireIfElapsed, RESET_CHECK_INTERVAL_MS)
 
     return () => {
-      if (listenerRef.current) {
-        rateLimitState.listeners.delete(listenerRef.current)
-      }
+      rateLimitState.listeners.delete(setStatus)
+      clearInterval(timer)
     }
   }, [])
-
-  // Check if reset time has passed and reset counters
-  if (rateLimitState.resetAt && Date.now() > rateLimitState.resetAt) {
-    rateLimitState.remaining = rateLimitState.limit
-    rateLimitState.resetAt = null
-    notifyListeners()
-  }
 
   return status
 }
