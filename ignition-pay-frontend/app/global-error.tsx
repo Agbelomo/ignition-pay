@@ -2,6 +2,7 @@
 
 import * as Sentry from '@sentry/nextjs'
 import { useEffect } from 'react'
+import { getErrorReportContext } from '@/lib/error-report-context'
 
 export default function GlobalError({
   error,
@@ -11,7 +12,17 @@ export default function GlobalError({
   reset: () => void
 }) {
   useEffect(() => {
-    Sentry.captureException(error)
+    const { walletAddress, locale } = getErrorReportContext()
+    Sentry.withScope((scope) => {
+      scope.setTag('locale', locale)
+      if (walletAddress) {
+        // A public Stellar address identifies the session without being a secret.
+        scope.setUser({ id: walletAddress })
+        scope.setTag('wallet_address', walletAddress)
+      }
+      scope.setContext('session', { locale, walletAddress: walletAddress ?? null })
+      Sentry.captureException(error)
+    })
   }, [error])
 
   return (
