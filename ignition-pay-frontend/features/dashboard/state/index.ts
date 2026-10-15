@@ -15,6 +15,7 @@ import {
   resolveWalletAddress,
 } from '@/features/dashboard/services'
 import { ErrorMessage, ErrorCode } from '@/lib/constants'
+import { subscribeToWalletNetworkChanges } from '@/lib/wallet-network'
 
 export type BalanceStatus = 'loading' | 'ready' | 'error'
 
@@ -123,6 +124,16 @@ export function useWalletBalances(addressProp?: string): WalletBalancesState {
       requestRef.current?.abort()
     }
   }, [address, load])
+
+  // A wallet network switch makes the current balances stale, so drop them and
+  // reload rather than showing the previous network until the next poll.
+  useEffect(() => {
+    return subscribeToWalletNetworkChanges(() => {
+      hasSnapshotRef.current = false
+      setSnapshot(null)
+      void load()
+    })
+  }, [load])
 
   // Subscribe to live DEX price updates via WebSocket or 10s price polling
   useEffect(() => {

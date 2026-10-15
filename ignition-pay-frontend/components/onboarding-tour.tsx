@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/lib/i18n'
 import {
   requestOnboardingTourRestart,
   useOnboardingTour,
@@ -71,6 +72,14 @@ export function OnboardingTour() {
     dismiss,
   } = useOnboardingTour()
   const [rect, setRect] = useState<HighlightRect | null>(null)
+  const { t } = useTranslation()
+
+  // Falls back to the built-in English copy when a key has no translation
+  // (`t` returns the key path itself when nothing resolves).
+  const tr = (key: string, fallback: string, vars?: Record<string, string | number>) => {
+    const value = t(`onboardingTour.${key}`, vars)
+    return value === `onboardingTour.${key}` ? fallback : value
+  }
 
   useEffect(() => {
     if (!isOpen) return
@@ -128,8 +137,10 @@ export function OnboardingTour() {
       >
         <DialogContent aria-labelledby={TITLE_ID} aria-describedby={DESCRIPTION_ID}>
           <DialogHeader>
-            <DialogTitle id={TITLE_ID}>{step.title}</DialogTitle>
-            <DialogDescription id={DESCRIPTION_ID}>{step.description}</DialogDescription>
+            <DialogTitle id={TITLE_ID}>{tr(`steps.${step.target}.title`, step.title)}</DialogTitle>
+            <DialogDescription id={DESCRIPTION_ID}>
+              {tr(`steps.${step.target}.description`, step.description)}
+            </DialogDescription>
           </DialogHeader>
 
           <p
@@ -137,7 +148,10 @@ export function OnboardingTour() {
             aria-live="polite"
             className="mt-4 text-xs font-medium text-muted-foreground"
           >
-            Step {stepIndex + 1} of {steps.length}
+            {tr('stepCounter', `Step ${stepIndex + 1} of ${steps.length}`, {
+              current: stepIndex + 1,
+              total: steps.length,
+            })}
           </p>
 
           <div aria-hidden="true" className="mt-2 flex items-center gap-1.5">
@@ -154,15 +168,15 @@ export function OnboardingTour() {
 
           <DialogFooter>
             <Button variant="ghost" onClick={dismiss}>
-              Skip tour
+              {tr('skip', 'Skip tour')}
             </Button>
             {!isFirstStep && (
               <Button variant="outline" onClick={back}>
-                Back
+                {tr('back', 'Back')}
               </Button>
             )}
             <Button onClick={isLastStep ? dismiss : next}>
-              {isLastStep ? 'Done' : 'Next'}
+              {isLastStep ? tr('done', 'Done') : tr('next', 'Next')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -176,13 +190,15 @@ export function OnboardingTour() {
  * tour from the first step.
  */
 export function OnboardingTourRestartButton({ className }: { className?: string }) {
+  const { t } = useTranslation()
+  const label = t('onboardingTour.replay')
   return (
     <Button
       variant="outline"
       className={className}
       onClick={requestOnboardingTourRestart}
     >
-      Replay tour
+      {label === 'onboardingTour.replay' ? 'Replay tour' : label}
     </Button>
   )
 }

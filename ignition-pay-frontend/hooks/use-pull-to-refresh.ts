@@ -46,6 +46,12 @@ export function usePullToRefresh({
    * report a stale verdict for one more gesture.
    */
   const cooldownUntilRef = useRef(0)
+  /**
+   * True from the moment a refresh starts until it settles. Read from a ref so
+   * a second `touchend` delivered before React re-renders (which would still
+   * see the old `isRefreshing`) cannot start a second request.
+   */
+  const inFlightRef = useRef(false)
 
   const onTouchStart = useCallback(
     (event: React.TouchEvent) => {
@@ -63,6 +69,15 @@ export function usePullToRefresh({
       const startY = startYRef.current
       if (startY === null) return
 
+      // The gesture only belongs to pull-to-refresh while the page is at the
+      // top. If the user scrolled during it, hand control back to native
+      // scrolling so releasing doesn't also trigger a refresh.
+      if (window.scrollY > 0) {
+        startYRef.current = null
+        setPullDistance(0)
+        return
+      }
+
       const currentY = event.touches[0]?.clientY ?? startY
       const delta = (currentY - startY) * RESISTANCE
 
@@ -78,8 +93,14 @@ export function usePullToRefresh({
     [threshold],
   )
 
+  const onTouchCancel = useCallback(() => {
+    startYRef.current = null
+    setPullDistance(0)
+  }, [])
+
   const onTouchEnd = useCallback(async () => {
-    const shouldRefresh = startYRef.current !== null && pullDistance >= threshold
+    const shouldRefresh =
+      startYRef.current !== null && pullDistance >= threshold && !inFlightRef.current
     startYRef.current = null
 
     if (!shouldRefresh) {
@@ -87,6 +108,7 @@ export function usePullToRefresh({
       return
     }
 
+    inFlightRef.current = true
     setIsRefreshing(true)
     // Collapse the pull indicator. The spinner is driven by `isRefreshing`, and
     // holding the distance at the threshold reported `isReady` — "release to
@@ -98,6 +120,7 @@ export function usePullToRefresh({
       // Stamped when the refresh settles, so the cooldown measures from the
       // end of the request rather than the start of the gesture.
       cooldownUntilRef.current = Date.now() + cooldownMs
+      inFlightRef.current = false
       setIsRefreshing(false)
       setPullDistance(0)
     }
@@ -108,6 +131,6 @@ export function usePullToRefresh({
     isRefreshing,
     /** True once the user has pulled far enough for a release to refresh. */
     isReady: pullDistance >= threshold,
-    handlers: { onTouchStart, onTouchMove, onTouchEnd },
+    handlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel },
   }
 }

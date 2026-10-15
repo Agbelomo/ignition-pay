@@ -261,3 +261,69 @@ describe('usePullToRefresh cooldown', () => {
     expect(onRefresh).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('usePullToRefresh scrolling during the gesture (#875)', () => {
+  const setScrollY = (value: number) =>
+    Object.defineProperty(window, 'scrollY', { value, configurable: true, writable: true })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setScrollY(0)
+  })
+
+  afterEach(() => {
+    cleanup()
+    setScrollY(0)
+    vi.useRealTimers()
+  })
+
+  it('does not refresh when the page scrolls away from the top mid-gesture', async () => {
+    const onRefresh = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => usePullToRefresh({ onRefresh }))
+
+    act(() => {
+      result.current.handlers.onTouchStart(touchEvent(0))
+      result.current.handlers.onTouchMove(touchEvent(PULL_THRESHOLD * 2))
+    })
+    expect(result.current.isReady).toBe(true)
+
+    // The user scrolls during the pull; the next move hands control back to the page.
+    setScrollY(120)
+    act(() => {
+      result.current.handlers.onTouchMove(touchEvent(PULL_THRESHOLD * 2 + 10))
+    })
+    expect(result.current.pullDistance).toBe(0)
+
+    release(result)
+    await settle()
+    expect(onRefresh).not.toHaveBeenCalled()
+    expect(result.current.isRefreshing).toBe(false)
+  })
+
+  it('resets the pull when the touch is cancelled', async () => {
+    const onRefresh = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => usePullToRefresh({ onRefresh }))
+
+    pull(result)
+    act(() => result.current.handlers.onTouchCancel())
+    expect(result.current.pullDistance).toBe(0)
+
+    release(result)
+    await settle()
+    expect(onRefresh).not.toHaveBeenCalled()
+  })
+
+  it('refreshes once even if touchend is delivered twice', async () => {
+    const onRefresh = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => usePullToRefresh({ onRefresh }))
+
+    pull(result)
+    act(() => {
+      void result.current.handlers.onTouchEnd()
+      void result.current.handlers.onTouchEnd()
+    })
+    await settle()
+
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+  })
+})
