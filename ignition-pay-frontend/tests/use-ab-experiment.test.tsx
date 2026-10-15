@@ -19,6 +19,12 @@ const TREATMENT_USER =
     (userId) => resolveVariant(EXPERIMENT, userId) === 'grid-compact',
   ) ?? 'user-0'
 
+/** A different user id, one the hash keeps on the control variant. */
+const CONTROL_USER =
+  Array.from({ length: 200 }, (_, index) => `user-${index}`).find(
+    (userId) => resolveVariant(EXPERIMENT, userId) === 'control',
+  ) ?? 'user-1'
+
 beforeEach(() => {
   window.localStorage.clear()
 })
@@ -41,17 +47,29 @@ describe('useExperiment (#670)', () => {
     expect(renders[0]).toBe('control')
 
     await waitFor(() => expect(result.current.variantId).toBe('grid-compact'))
-    expect(peekExperimentVariant(EXPERIMENT.id)).toBe('grid-compact')
+    expect(peekExperimentVariant(EXPERIMENT.id, TREATMENT_USER)).toBe('grid-compact')
     expect(result.current.isControl).toBe(false)
   })
 
-  it('reuses a persisted assignment across mounts', async () => {
+  it('reuses a persisted assignment across mounts for the same user', async () => {
     const first = renderHook(() => useExperiment(EXPERIMENT, { userId: TREATMENT_USER }))
     await waitFor(() => expect(first.result.current.variantId).toBe('grid-compact'))
     first.unmount()
 
-    const second = renderHook(() => useExperiment(EXPERIMENT, { userId: 'someone-else' }))
+    const second = renderHook(() => useExperiment(EXPERIMENT, { userId: TREATMENT_USER }))
     await waitFor(() => expect(second.result.current.variantId).toBe('grid-compact'))
+  })
+
+  // #883 — a persisted assignment belongs to the account that earned it. A
+  // different user must be resolved from their own id, not handed the previous
+  // session's variant.
+  it('does not hand a persisted assignment to a different user', async () => {
+    const first = renderHook(() => useExperiment(EXPERIMENT, { userId: TREATMENT_USER }))
+    await waitFor(() => expect(first.result.current.variantId).toBe('grid-compact'))
+    first.unmount()
+
+    const second = renderHook(() => useExperiment(EXPERIMENT, { userId: CONTROL_USER }))
+    await waitFor(() => expect(second.result.current.variantId).toBe('control'))
   })
 
   it('fires completed when complete is called', async () => {

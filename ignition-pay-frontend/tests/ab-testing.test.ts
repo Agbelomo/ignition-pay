@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  clearExperimentState,
   completeExperiment,
   controlVariantId,
   getExperimentVariant,
+  getOrCreateExperimentUserId,
   hashToRange,
   peekExperimentVariant,
   resetExperiment,
@@ -15,6 +17,15 @@ const BASE: Experiment = {
   id: 'send-form-layout',
   variants: [{ id: 'control' }, { id: 'compact' }],
 }
+
+/**
+ * A user id the deterministic hash resolves to the control variant. Used to
+ * prove that a stale assignment left by an earlier account is not inherited.
+ */
+const CONTROL_USER =
+  Array.from({ length: 300 }, (_, index) => `user-${index}`).find(
+    (userId) => resolveVariant(BASE, userId) === 'control',
+  ) ?? 'user-0'
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -102,14 +113,17 @@ describe('deterministic assignment (#670)', () => {
 describe('persistence (#670)', () => {
   it('stores the assigned variant and reuses it', () => {
     const first = getExperimentVariant(BASE, { userId: 'stable-user' })
-    expect(peekExperimentVariant(BASE.id)).toBe(first)
+    expect(peekExperimentVariant(BASE.id, 'stable-user')).toBe(first)
 
     // A later call returns the persisted value, whatever it is.
     expect(getExperimentVariant(BASE, { userId: 'stable-user' })).toBe(first)
   })
 
   it('re-assigns a user whose stored variant no longer exists', () => {
-    window.localStorage.setItem('ignition-pay:ab:variant:send-form-layout', 'retired')
+    window.localStorage.setItem(
+      'ignition-pay:ab:variant:send-form-layout:stable-user',
+      'retired',
+    )
 
     const variant = getExperimentVariant(BASE, { userId: 'stable-user' })
 
@@ -118,11 +132,75 @@ describe('persistence (#670)', () => {
 
   it('clears an assignment with resetExperiment', () => {
     getExperimentVariant(BASE, { userId: 'stable-user' })
-    expect(peekExperimentVariant(BASE.id)).not.toBeNull()
+    expect(peekExperimentVariant(BASE.id, 'stable-user')).not.toBeNull()
 
     resetExperiment(BASE.id)
 
+    expect(peekExperimentVariant(BASE.id, 'stable-user')).toBeNull()
+  })
+
+  it('clears only the requested owner with a scoped reset', () => {
+    getExperimentVariant(BASE, { userId: 'alice' })
+    getExperimentVariant(BASE, { userId: 'bob' })
+
+    resetExperiment(BASE.id, 'alice')
+
+    expect(peekExperimentVariant(BASE.id, 'alice')).toBeNull()
+    expect(peekExperimentVariant(BASE.id, 'bob')).not.toBeNull()
+  })
+})
+
+describe('user-scoped persistence (#883)', () => {
+  it('does not leak one user\'s assignment to another user', () => {
+    // A previous account left this assignment behind on the shared browser.
+    window.localStorage.setItem('ignition-pay:ab:variant:send-form-layout:alice', 'compact')
+
+    // The next account must be bucketed from its own id, never inherit 'compact'.
+    expect(getExperimentVariant(BASE, { userId: CONTROL_USER })).toBe('control')
+  })
+
+  it('ignores a legacy assignment stored before assignments were user-scoped', () => {
+    // Old versions keyed the value only by experiment id, which is what made
+    // assignments survive logout. That record must not be honoured for a user.
+    window.localStorage.setItem('ignition-pay:ab:variant:send-form-layout', 'compact')
+
+    expect(getExperimentVariant(BASE, { userId: CONTROL_USER })).toBe('control')
+  })
+
+  it('files each owner under its own storage key', () => {
+    getExperimentVariant(BASE, { userId: 'alice' })
+    getExperimentVariant(BASE, { userId: 'bob' })
+
+    expect(peekExperimentVariant(BASE.id, 'alice')).toBe(resolveVariant(BASE, 'alice'))
+    expect(peekExperimentVariant(BASE.id, 'bob')).toBe(resolveVariant(BASE, 'bob'))
+    expect(window.localStorage.getItem('ignition-pay:ab:variant:send-form-layout:alice')).not.toBeNull()
+    expect(window.localStorage.getItem('ignition-pay:ab:variant:send-form-layout:bob')).not.toBeNull()
+  })
+
+  it('drops every artifact on sign-out with clearExperimentState', () => {
+    const anonymousId = getOrCreateExperimentUserId()
+    getExperimentVariant(BASE)
+    getExperimentVariant(BASE, { userId: 'alice' })
+    expect(peekExperimentVariant(BASE.id)).not.toBeNull()
+
+    clearExperimentState()
+
+    expect(window.localStorage.getItem('ignition-pay:ab:user-id')).toBeNull()
+    expect(window.localStorage.getItem('ignition-pay:ab:variant:send-form-layout:alice')).toBeNull()
     expect(peekExperimentVariant(BASE.id)).toBeNull()
+    // A fresh anonymous id is generated, so the next session starts clean.
+    expect(getOrCreateExperimentUserId()).not.toBe(anonymousId)
+  })
+
+  it('gives a different user a fresh assignment after a sign-out', () => {
+    const before = getExperimentVariant(BASE)
+    expect(peekExperimentVariant(BASE.id)).toBe(before)
+
+    clearExperimentState()
+
+    const after = getExperimentVariant(BASE, { userId: CONTROL_USER })
+    expect(after).toBe('control')
+    expect(peekExperimentVariant(BASE.id, CONTROL_USER)).toBe('control')
   })
 })
 
