@@ -114,6 +114,23 @@ export function KeyboardShortcutsHelpDialog({
   onOpenChange,
   shortcuts,
 }: KeyboardShortcutsHelpDialogProps) {
+  // Escape must always dismiss the dialog. The global shortcut listener skips
+  // editable targets and already-handled events, and the primitive's own
+  // handling depends on where focus sits, so listen here for as long as the
+  // dialog is open.
+  useEffect(() => {
+    if (!open) return
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onOpenChange(false)
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open, onOpenChange])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent aria-labelledby={TITLE_ID} aria-describedby={DESCRIPTION_ID}>

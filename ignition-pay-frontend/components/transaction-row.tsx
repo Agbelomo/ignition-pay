@@ -109,12 +109,16 @@ export function TransactionRow({ transaction, tabIndex }: TransactionRowProps) {
   const displayRecipient = recipient.slice(0, 6) + '...' + recipient.slice(-4)
   const isSent = type === 'sent'
 
-  const formattedDate = timestamp.toLocaleDateString('en-US', {
+  // Horizon reports ledger close times in UTC, so name the timezone the row is
+  // shown in and expose the exact UTC instant for comparison.
+  const formattedDate = timestamp.toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    timeZoneName: 'short',
   })
+  const utcTimestamp = Number.isNaN(timestamp.getTime()) ? undefined : timestamp.toISOString()
 
   const isOptimistic = isOptimisticTransaction(transaction)
   const txId = isOptimistic ? transaction.optimisticId : transaction.id
@@ -159,7 +163,13 @@ export function TransactionRow({ transaction, tabIndex }: TransactionRowProps) {
           {isSent ? '-' : '+'}
           {amount.toFixed(4)} {asset}
         </p>
-        <p className="text-xs text-muted-foreground">{formattedDate}</p>
+        <time
+          className="text-xs text-muted-foreground"
+          dateTime={utcTimestamp}
+          title={utcTimestamp ? `${utcTimestamp} (UTC)` : undefined}
+        >
+          {formattedDate}
+        </time>
         <TransactionStatusBadge transaction={transaction} />
       </div>
     </Link>
