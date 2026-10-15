@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { ExternalLink, ArrowLeft } from 'lucide-react'
+import { HttpError, toUserMessage } from '@/lib/errorUtils'
 
 type TxDetail = {
   id: string
@@ -31,17 +32,19 @@ export default function TransactionDetailPage() {
     const url = `${window.location.origin}/sep24/transactions/${id}`
     fetch(url)
       .then((r) => {
-        if (!r.ok) throw new Error('Failed to fetch')
+        // Keep the status so the message can distinguish an expired session
+        // from rate limiting or a server error (#896).
+        if (!r.ok) throw new HttpError(r.status)
         return r.json()
       })
       .then((data) => setTx(data))
-      .catch((e) => setError(String(e)))
+      .catch((e) => setError(toUserMessage(e)))
       .finally(() => setLoading(false))
   }, [id])
 
   if (!id) return <div className="p-6">Transaction id missing</div>
   if (loading) return <div className="p-6">Loading…</div>
-  if (error) return <div className="p-6 text-destructive">Error: {error}</div>
+  if (error) return <div className="p-6 text-destructive">{error}</div>
   if (!tx) return <div className="p-6 text-muted-foreground">No data</div>
 
   const explorer = tx.txHash ? `https://stellar.expert/explorer/public/tx/${tx.txHash}` : null
