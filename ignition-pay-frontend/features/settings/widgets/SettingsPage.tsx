@@ -29,6 +29,7 @@ import { NotificationSettings } from './NotificationSettings'
 import { KeyboardShortcutSettings } from './KeyboardShortcutSettings'
 
 import { useTranslation, type SupportedLocale } from '@/lib/i18n'
+import { clearExperimentState } from '@/lib/ab-testing'
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useTranslation()
@@ -51,6 +52,14 @@ export function SettingsPage() {
     navigator.clipboard.writeText(mockSeedPhrase)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  // #883 — A/B assignments and the anonymous experiment id must not survive a
+  // sign-out, otherwise the next account on this browser inherits the previous
+  // account's experiments. The real auth teardown belongs here too, once the
+  // session flow lands.
+  const handleSignOut = () => {
+    clearExperimentState()
   }
 
   return (
@@ -446,7 +455,12 @@ export function SettingsPage() {
           <h2 className="text-xl font-bold text-red-500">Danger Zone</h2>
 
           <div className="space-y-3">
-            <Button variant="outline" className="w-full justify-start" data-testid="settings-signout-button">
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              data-testid="settings-signout-button"
+              onClick={handleSignOut}
+            >
               <LogOut className="mr-2 h-4 w-4" />
               Sign Out
             </Button>

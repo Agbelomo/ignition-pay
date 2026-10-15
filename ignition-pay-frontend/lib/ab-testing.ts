@@ -12,7 +12,12 @@
  *   is deterministic — the same user always lands in the same variant — because
  *   the choice comes from hashing `user + experiment`, not from `Math.random()`.
  *   The winner is persisted in `localStorage` so a later change to the
- *   experiment's weights cannot move an existing user.
+ *   experiment's weights cannot move an existing user. Assignments are stored
+ *   per user, so signing out and back in as a different account can never
+ *   inherit the previous account's variant (issue #883).
+ * - {@link clearExperimentState} drops every persisted assignment and the
+ *   anonymous id. Call it from the sign-out flow so no experiment state
+ *   survives a session.
  * - {@link subscribeToExperimentEvents} exposes `entered` / `completed` events
  *   so analytics and tests can observe assignment without this module knowing
  *   about any analytics provider.
@@ -61,8 +66,10 @@ export interface ExperimentEvent {
 
 export type ExperimentEventListener = (event: ExperimentEvent) => void
 
-const VARIANT_STORAGE_PREFIX = 'ignition-pay:ab:variant:'
-const USER_ID_STORAGE_KEY = 'ignition-pay:ab:user-id'
+/** Every key this module owns shares this namespace, so sign-out can purge it. */
+const STORAGE_NAMESPACE = 'ignition-pay:ab:'
+const VARIANT_STORAGE_PREFIX = `${STORAGE_NAMESPACE}variant:`
+const USER_ID_STORAGE_KEY = `${STORAGE_NAMESPACE}user-id`
 
 const listeners = new Set<ExperimentEventListener>()
 
@@ -112,6 +119,35 @@ function safeRemoveItem(key: string): void {
   } catch {
     // Ignore: nothing to clean up if storage is unavailable.
   }
+}
+
+/** Every key currently in `localStorage`, or `[]` when it cannot be read. */
+function listStorageKeys(): string[] {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return []
+    const keys: string[] = []
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index)
+      if (key !== null) keys.push(key)
+    }
+    return keys
+  } catch {
+    return []
+  }
+}
+
+/** The stored anonymous id, without generating one as a side effect. */
+function readStoredExperimentUserId(): string | null {
+  return safeGetItem(USER_ID_STORAGE_KEY)
+}
+
+/**
+ * Storage key for an assignment. It carries the owning user id as well as the
+ * experiment id, so two accounts sharing a browser never read each other's
+ * variant — the root cause of issue #883.
+ */
+function scopedVariantKey(experimentId: string, userId: string): string {
+  return `${VARIANT_STORAGE_PREFIX}${experimentId}:${encodeURIComponent(userId)}`
 }
 
 function isValidExperiment(experiment: Experiment | undefined | null): experiment is Experiment {
@@ -241,7 +277,9 @@ export function getExperimentVariant(
     // when storage is unavailable.
     if (userId === null) return control
 
-    const storageKey = VARIANT_STORAGE_PREFIX + experiment.id
+    // Keyed by the resolved owner, not just the experiment, so a second account
+    // on the same browser cannot inherit the first account's variant (#883).
+    const storageKey = scopedVariantKey(experiment.id, userId)
     const stored = safeGetItem(storageKey)
 
     // An experiment whose variant list changed must not strand a user on a
@@ -267,22 +305,50 @@ export function completeExperiment(
 ): void {
   try {
     if (!isValidExperiment(experiment)) return
-    const variantId =
-      options.variantId ?? safeGetItem(VARIANT_STORAGE_PREFIX + experiment.id) ?? controlVariantId(experiment)
+    const userId = options.userId ?? getOrCreateExperimentUserId()
+    const storedVariant =
+      userId === null ? null : safeGetItem(scopedVariantKey(experiment.id, userId))
+    const variantId = options.variantId ?? storedVariant ?? controlVariantId(experiment)
     emit({
       type: 'completed',
       experimentId: experiment.id,
       variantId,
-      userId: options.userId ?? getOrCreateExperimentUserId(),
+      userId,
     })
   } catch {
     // Completion is telemetry: never let it throw into the caller.
   }
 }
 
-/** Clears a persisted assignment, so the next call re-enrols the user. */
-export function resetExperiment(experimentId: string): void {
-  safeRemoveItem(VARIANT_STORAGE_PREFIX + experimentId)
+/**
+ * Clears a persisted assignment so the next call re-enrols the user.
+ *
+ * Pass `userId` to clear a single owner's assignment. Without one, every stored
+ * assignment for the experiment is dropped — the safe default, because an
+ * unscoped reset must not leave a stale record behind under another account.
+ */
+export function resetExperiment(experimentId: string, userId?: string | null): void {
+  if (typeof userId === 'string' && userId.length > 0) {
+    safeRemoveItem(scopedVariantKey(experimentId, userId))
+    return
+  }
+
+  const base = VARIANT_STORAGE_PREFIX + experimentId
+  for (const key of listStorageKeys()) {
+    if (key === base || key.startsWith(`${base}:`)) safeRemoveItem(key)
+  }
+}
+
+/**
+ * Drops every persisted A/B artifact: all variant assignments plus the
+ * anonymous id (issue #883). Call this from the sign-out flow so a different
+ * user who signs in next is assigned from scratch instead of inheriting the
+ * previous session's experiments.
+ */
+export function clearExperimentState(): void {
+  for (const key of listStorageKeys()) {
+    if (key.startsWith(STORAGE_NAMESPACE)) safeRemoveItem(key)
+  }
 }
 
 /** Subscribes to enter/complete events. Returns an unsubscribe function. */
@@ -293,7 +359,19 @@ export function subscribeToExperimentEvents(listener: ExperimentEventListener): 
   }
 }
 
-/** Reads the persisted variant without assigning or emitting, if any. */
-export function peekExperimentVariant(experimentId: string): string | null {
-  return safeGetItem(VARIANT_STORAGE_PREFIX + experimentId)
+/**
+ * Reads the persisted variant without assigning or emitting, if any.
+ *
+ * Defaults to the current anonymous id; pass `userId` to inspect a specific
+ * account's assignment. Returns `null` when no assignment — or no owner — can be
+ * resolved.
+ */
+export function peekExperimentVariant(
+  experimentId: string,
+  userId?: string | null,
+): string | null {
+  const owner =
+    typeof userId === 'string' && userId.length > 0 ? userId : readStoredExperimentUserId()
+  if (owner === null) return null
+  return safeGetItem(scopedVariantKey(experimentId, owner))
 }

@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SettingsPage } from '../features/settings/widgets/SettingsPage'
 import { LanguageProvider } from '../lib/i18n'
@@ -39,5 +39,28 @@ describe('SettingsPage', () => {
       screen.getByRole('heading', { name: 'Keyboard shortcuts' }),
     ).toBeInTheDocument()
     expect(screen.getByText('Preferences')).toBeInTheDocument()
+  })
+
+  // #883 — A/B assignments are per user and must be purged on sign-out so the
+  // next account does not inherit the previous one's experiments.
+  it('clears persisted A/B state when the user signs out', async () => {
+    window.localStorage.setItem(
+      'ignition-pay:ab:variant:dashboard-asset-layout:someone',
+      'grid-compact',
+    )
+    window.localStorage.setItem('ignition-pay:ab:user-id', 'anon-123')
+
+    render(
+      <LanguageProvider>
+        <SettingsPage />
+      </LanguageProvider>,
+    )
+
+    fireEvent.click(screen.getByTestId('settings-signout-button'))
+
+    expect(
+      window.localStorage.getItem('ignition-pay:ab:variant:dashboard-asset-layout:someone'),
+    ).toBeNull()
+    expect(window.localStorage.getItem('ignition-pay:ab:user-id')).toBeNull()
   })
 })
