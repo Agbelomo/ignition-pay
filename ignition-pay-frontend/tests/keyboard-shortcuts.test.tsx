@@ -128,6 +128,19 @@ describe('keyboard shortcuts (#668)', () => {
     expect(search).toHaveFocus()
   })
 
+  it('closes the help dialog on Escape pressed from inside it (#871)', async () => {
+    render(<AppShell />)
+
+    fireEvent.keyDown(window, { key: '?' })
+    const dialog = await screen.findByRole('dialog')
+    const dismiss = screen.getByRole('button', { name: 'Got it' })
+    dismiss.focus()
+
+    fireEvent.keyDown(dismiss, { key: 'Escape' })
+
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
+  })
+
   it('closes the help dialog on Escape', async () => {
     render(<AppShell />)
 
