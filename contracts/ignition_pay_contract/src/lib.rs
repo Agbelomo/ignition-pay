@@ -466,6 +466,29 @@ impl PriceFeedContract {
         let oracle_client = MultiOracleContractClient::new(env, &multi_oracle_contract);
         oracle_client.push_price(&asset, &price);
     }
+
+    /// Return the oracle's max staleness threshold (in seconds).
+    ///
+    /// Providers that push prices via [`update_price`] can call this before
+    /// submitting to determine whether their data is fresh enough to be
+    /// accepted by [`MultiOracleContract::get_median_price`].  A price whose
+    /// age exceeds this value will be excluded from the median calculation and
+    /// may cause an `"All prices are stale"` panic if it is the only
+    /// observation for an asset.
+    ///
+    /// The value is read directly from the target `MultiOracleContract`
+    /// instance so it always reflects the admin's latest `set_max_staleness`
+    /// setting.  When the admin has never called `set_max_staleness` the
+    /// oracle falls back to `DEFAULT_MAX_STALENESS_SECONDS` (300 s); this
+    /// getter mirrors that same default so callers never observe a mismatch.
+    ///
+    /// # Arguments
+    /// * `multi_oracle_contract` – the address of the `MultiOracleContract`
+    ///   that this feed delegates to.
+    pub fn get_max_staleness(env: Env, multi_oracle_contract: Address) -> u64 {
+        let oracle_client = MultiOracleContractClient::new(&env, &multi_oracle_contract);
+        oracle_client.max_staleness()
+    }
 }
 
 #[contract]
