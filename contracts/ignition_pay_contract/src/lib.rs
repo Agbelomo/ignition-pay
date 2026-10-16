@@ -1016,6 +1016,25 @@ impl GovernanceContract {
         env.storage().instance().get(&Symbol::new(&env, "proposal_count")).unwrap_or(0)
     }
 
+    /// Re-bind the governance token after a migration/re-issue, so the contract
+    /// does not have to be redeployed (and its proposals/votes lost). Admin only.
+    pub fn update_governance_token(&self, env: &Env, new_token: Address) {
+        let admin: Address = env.storage().instance().get(&Symbol::new(&env, "admin")).unwrap_or_else(|| panic!("Admin not set"));
+        admin.require_auth();
+
+        let old_token: Address = env.storage().instance().get(&Symbol::new(&env, "governance_token")).unwrap_or_else(|| panic!("Governance token not set"));
+        env.storage().instance().set(&Symbol::new(&env, "governance_token"), &new_token);
+
+        env.events().publish(
+            (Symbol::new(&env, "governance_token_updated"), &admin),
+            (old_token, new_token),
+        );
+    }
+
+    pub fn governance_token(&self, env: Env) -> Address {
+        env.storage().instance().get(&Symbol::new(&env, "governance_token")).unwrap_or_else(|| panic!("Governance token not set"))
+    }
+
     pub fn set_quorum(&self, env: &Env, quorum_bps: u32) {
         let admin: Address = env.storage().instance().get(&Symbol::new(&env, "admin")).unwrap_or_else(|| panic!("Admin not set"));
         admin.require_auth();
