@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, Map, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, Map, String, Symbol, Vec};
 use crate::MultiOracleContractClient;
 
 const MAX_CALLS_PER_LEDGER: u32 = 5;
@@ -10,6 +10,7 @@ const AUTHORIZATIONS_KEY: &str = "authorizations";
 const RATE_LIMIT_KEY: &str = "rate_limit";
 const KYC_STATUS_KEY: &str = "kyc_status";
 const PENDING_UPGRADE_KEY: &str = "pending_upgrade";
+const PENDING_VERSION_KEY: &str = "pending_version";
 const DEFAULT_MAX_STALENESS_SECONDS: u64 = 300;
 
 #[contracttype]
@@ -17,6 +18,8 @@ const DEFAULT_MAX_STALENESS_SECONDS: u64 = 300;
 pub struct PriceObservation {
     pub price: u64,
     pub timestamp: u64,
+    pub oracle: Address,
+    pub ledger: u32,
 }
 
 #[contract]
@@ -117,12 +120,28 @@ impl IgnitionPayContract {
         env.events().publish((Symbol::new(&env, "upgrade_initiated"), &admin), &new_wasm_hash);
     }
 
+    /// Like [`Self::upgrade`], but also records the version the uploaded WASM
+    /// reports, so `apply_upgrade` can publish it instead of a hardcoded value.
+    pub fn upgrade_with_version(env: Env, new_wasm_hash: BytesN<32>, new_version: Symbol) {
+        let admin: Address = env.storage().instance().get(&Symbol::new(&env, ADMIN_KEY)).unwrap_or_else(|| panic!("Admin not set"));
+        admin.require_auth();
+        env.storage().instance().set(&Symbol::new(&env, PENDING_UPGRADE_KEY), &new_wasm_hash);
+        env.storage().instance().set(&Symbol::new(&env, PENDING_VERSION_KEY), &new_version);
+        env.events().publish((Symbol::new(&env, "upgrade_initiated"), &admin), &new_wasm_hash);
+    }
+
     pub fn apply_upgrade(env: Env) {
         let admin: Address = env.storage().instance().get(&Symbol::new(&env, ADMIN_KEY)).unwrap_or_else(|| panic!("Admin not set"));
         admin.require_auth();
         let new_wasm_hash: BytesN<32> = env.storage().instance().get(&Symbol::new(&env, PENDING_UPGRADE_KEY)).unwrap_or_else(|| panic!("No pending upgrade"));
         env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
-        env.storage().instance().set(&Symbol::new(&env, VERSION_KEY), &Symbol::new(&env, "0.2.0"));
+        // Publish the version recorded by `upgrade_with_version`; if none was
+        // supplied the current version string is left untouched rather than
+        // guessing what the uploaded WASM reports.
+        if let Some(new_version) = env.storage().instance().get::<Symbol, Symbol>(&Symbol::new(&env, PENDING_VERSION_KEY)) {
+            env.storage().instance().set(&Symbol::new(&env, VERSION_KEY), &new_version);
+            env.storage().instance().remove(&Symbol::new(&env, PENDING_VERSION_KEY));
+        }
         env.storage().instance().remove(&Symbol::new(&env, PENDING_UPGRADE_KEY));
         env.events().publish((Symbol::new(&env, "upgrade_applied"), &admin), &new_wasm_hash);
     }
@@ -347,7 +366,19 @@ impl MultiOracleContract {
         let mut prices: Map<Symbol, Vec<PriceObservation>> = env.storage().instance().get(&"prices").unwrap_or_else(|| Map::new(env));
         let mut asset_prices = prices.get(asset.clone()).unwrap_or_else(|| Vec::new(env));
         
-        asset_prices.push_back(PriceObservation { price, timestamp: env.ledger().timestamp() });
+        // One observation per (oracle, asset) per ledger: a second submission in
+        // the same ledger must not add another entry to the median set.
+        let current_ledger = env.ledger().sequence();
+        if asset_prices.iter().any(|o| o.oracle == caller && o.ledger == current_ledger) {
+            panic!("Oracle already submitted a price for this asset in this ledger");
+        }
+
+        asset_prices.push_back(PriceObservation {
+            price,
+            timestamp: env.ledger().timestamp(),
+            oracle: caller,
+            ledger: current_ledger,
+        });
         prices.set(asset.clone(), asset_prices);
         env.storage().instance().set(&"prices", &prices);
     }
@@ -719,15 +750,25 @@ impl DelegationContract {
             }
         }
         let mut updated = delegates;
-        updated.set(delegator, representative);
+        updated.set(delegator.clone(), representative.clone());
         env.storage().instance().set(&"delegates", &updated);
+
+        env.events().publish(
+            (Symbol::new(env, "delegated"), &delegator),
+            &representative,
+        );
     }
 
     pub fn clear_delegation(&self, env: &Env, delegator: Address) {
         delegator.require_auth();
         let mut delegates: Map<Address, Address> = env.storage().instance().get(&"delegates").unwrap_or_else(|| Map::new(env));
-        delegates.remove(delegator);
+        delegates.remove(delegator.clone());
         env.storage().instance().set(&"delegates", &delegates);
+
+        env.events().publish(
+            (Symbol::new(env, "delegation_cleared"), &delegator),
+            (),
+        );
     }
 
     pub fn get_delegate(env: Env, delegator: Address) -> Option<Address> {
@@ -764,6 +805,9 @@ pub struct Proposal {
     pub id: u32,
     pub author: Address,
     pub title: Symbol,
+    /// Link to the full proposal text (e.g. an `ipfs://` or `https://` URI).
+    /// Empty when the proposal was created without one.
+    pub reference_uri: String,
     pub start_time: u64,
     pub end_time: u64,
     pub executed: bool,
@@ -802,6 +846,19 @@ impl GovernanceContract {
     }
 
     pub fn create_proposal(&self, env: &Env, author: Address, title: Symbol, duration: u64) {
+        self.create_proposal_with_uri(env, author, title, duration, String::from_str(env, ""));
+    }
+
+    /// Create a proposal that also records a `reference_uri` pointing at the
+    /// full proposal text, so UIs have a source of truth beyond the short title.
+    pub fn create_proposal_with_uri(
+        &self,
+        env: &Env,
+        author: Address,
+        title: Symbol,
+        duration: u64,
+        reference_uri: String,
+    ) {
         author.require_auth();
 
         let current_time = env.ledger().timestamp();
@@ -812,6 +869,7 @@ impl GovernanceContract {
             id,
             author: author.clone(),
             title: title.clone(),
+            reference_uri,
             start_time: current_time,
             end_time: current_time + duration,
             executed: false,
