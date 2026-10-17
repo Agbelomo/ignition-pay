@@ -516,6 +516,71 @@ fn test_governance_set_quorum_invalid() {
     contract.initialize(&admin, &token);
     env.mock_all_auths();
     contract.set_quorum(&10001);
+// --- PriceFeedContract Tests ---
+
+fn create_price_feed_contract(env: &Env) -> crate::PriceFeedContractClient {
+    crate::PriceFeedContractClient::new(env, &env.register_contract(None, crate::PriceFeedContract))
+}
+
+fn create_multi_oracle_contract(env: &Env) -> MultiOracleContractClient {
+    MultiOracleContractClient::new(env, &env.register_contract(None, MultiOracleContract))
+}
+
+/// Issue #851 — [CONTRACT-039]
+///
+/// `PriceFeedContract::get_max_staleness` must proxy through to the backing
+/// `MultiOracleContract` so that registered providers can determine how fresh
+/// their data must be before calling `update_price`.
+///
+/// Sub-tests:
+/// 1. Default: returns `DEFAULT_MAX_STALENESS_SECONDS` (300) before any
+///    `set_max_staleness` call.
+/// 2. Custom: returns whatever value the oracle admin has configured.
+/// 3. Zero: the getter faithfully relays a staleness of 0 (reject all prices
+///    scenario that the admin explicitly configured).
+#[test]
+fn test_price_feed_get_max_staleness_returns_oracle_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let oracle_admin = Address::random(&env);
+    let feed_admin = Address::random(&env);
+    let oracle = Address::random(&env);
+
+    // Deploy both contracts.
+    let oracle_contract = create_multi_oracle_contract(&env);
+    let feed_contract = create_price_feed_contract(&env);
+
+    oracle_contract.initialize(&oracle_admin, &Vec::from_array(&env, [oracle.clone()]));
+    feed_contract.initialize(&feed_admin);
+
+    let oracle_addr = oracle_contract.address.clone();
+
+    // 1. Default staleness (300 s) — admin has never called set_max_staleness.
+    assert_eq!(
+        feed_contract.get_max_staleness(&oracle_addr),
+        300,
+        "default max_staleness must be 300 seconds"
+    );
+
+    // 2. After the oracle admin updates max_staleness, the feed getter must
+    //    reflect the new value immediately.
+    oracle_contract.set_max_staleness(&600);
+    assert_eq!(
+        feed_contract.get_max_staleness(&oracle_addr),
+        600,
+        "get_max_staleness must mirror the oracle's configured value (600 s)"
+    );
+
+    // 3. Edge case: staleness set to 0 (all prices rejected by the oracle).
+    oracle_contract.set_max_staleness(&0);
+    assert_eq!(
+        feed_contract.get_max_staleness(&oracle_addr),
+        0,
+        "get_max_staleness must faithfully return 0 when configured"
+    );
+}
+
 #[test]
 #[should_panic(expected = "All prices are stale")]
 fn test_oracle_rejects_stale_prices() {
