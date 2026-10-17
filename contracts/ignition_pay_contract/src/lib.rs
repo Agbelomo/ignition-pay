@@ -303,6 +303,13 @@ impl EscrowContract {
     }
 
     pub fn fund_milestone(&self, env: &Env, id: u32, funder: Address) {
+        // Authenticate the actual invoker, not a caller-supplied address.
+        // Otherwise a malicious invoker could pass a victim's address as
+        // `funder` and, once the victim signs, bill them for the milestone.
+        let invoker = env.invoker();
+        if invoker != funder {
+            panic!("Funder must be the caller");
+        }
         funder.require_auth();
         let milestones: Map<u32, Milestone> = env.storage().instance().get(&Symbol::new(env, "milestones")).unwrap_or_else(|| Map::new(env));
         if !milestones.contains_key(id) {
@@ -311,7 +318,7 @@ impl EscrowContract {
         let milestone = milestones.get(id).unwrap();
         let token: Address = env.storage().instance().get(&Symbol::new(env, "token")).unwrap();
         let escrow = env.current_contract_address();
-        env.invoke_contract::<()>(&token, &Symbol::new(env, "transfer"), (funder, escrow, milestone.amount));
+        env.invoke_contract::<()>(&token, &Symbol::new(env, "transfer"), (invoker, escrow, milestone.amount));
     }
 
     pub fn release_milestone(&self, env: &Env, id: u32, percentage_bps: u32) {
