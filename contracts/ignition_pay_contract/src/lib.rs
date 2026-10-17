@@ -12,6 +12,13 @@ const KYC_STATUS_KEY: &str = "kyc_status";
 const PENDING_UPGRADE_KEY: &str = "pending_upgrade";
 const PENDING_VERSION_KEY: &str = "pending_version";
 const DEFAULT_MAX_STALENESS_SECONDS: u64 = 300;
+/// Upper bound on a governance proposal title, in UTF-8 bytes. Titles are
+/// stored as `String` (not `Symbol`) so human-readable text fits, but are still
+/// bounded to keep instance storage small.
+const MAX_PROPOSAL_TITLE_BYTES: u32 = 256;
+/// Default maximum move (in basis points) a single `PriceFeedContract`
+/// observation may make relative to the previous accepted price.
+const DEFAULT_MAX_PRICE_DEVIATION_BPS: u32 = 5_000;
 
 #[contracttype]
 #[derive(Clone)]
@@ -463,8 +470,49 @@ impl PriceFeedContract {
             panic!("Caller is not a registered provider");
         }
 
+        // A single bad observation (0, u64::MAX, or a wild jump) would corrupt
+        // the oracle median until the next update, so reject it up front.
+        if price == 0 || price == u64::MAX {
+            panic!("Price out of bounds");
+        }
+
+        let mut last_prices: Map<Symbol, u64> =
+            env.storage().instance().get(&"last_prices").unwrap_or_else(|| Map::new(env));
+        if let Some(last) = last_prices.get(asset.clone()) {
+            let max_bps: u32 = env
+                .storage()
+                .instance()
+                .get(&"max_deviation_bps")
+                .unwrap_or(DEFAULT_MAX_PRICE_DEVIATION_BPS);
+            let delta = price.abs_diff(last) as u128;
+            if delta * 10_000 > (last as u128) * (max_bps as u128) {
+                panic!("Price deviation exceeds limit");
+            }
+        }
+        last_prices.set(asset.clone(), price);
+        env.storage().instance().set(&"last_prices", &last_prices);
+
         let oracle_client = MultiOracleContractClient::new(env, &multi_oracle_contract);
         oracle_client.push_price(&asset, &price);
+    }
+
+    /// Set the maximum change (in basis points) a single `update_price`
+    /// observation may make relative to the previous accepted price for the
+    /// same asset. Admin only. Must be in `1..=10_000`.
+    pub fn set_max_deviation_bps(&self, env: &Env, max_deviation_bps: u32) {
+        let admin: Address = env.storage().instance().get(&"admin").unwrap_or_else(|| panic!("Admin not set"));
+        admin.require_auth();
+        if max_deviation_bps == 0 || max_deviation_bps > 10_000 {
+            panic!("Deviation must be between 1 and 10000 bps");
+        }
+        env.storage().instance().set(&"max_deviation_bps", &max_deviation_bps);
+    }
+
+    pub fn get_max_deviation_bps(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&"max_deviation_bps")
+            .unwrap_or(DEFAULT_MAX_PRICE_DEVIATION_BPS)
     }
 
     /// Return the oracle's max staleness threshold (in seconds).
@@ -740,6 +788,10 @@ impl TokenMetadataContract {
         env.storage().instance().set(&Symbol::new(&env, "metadata"), &metadata);
         env.storage().instance().set(&Symbol::new(&env, "icons"), &icons);
         env.storage().instance().set(&Symbol::new(&env, "descriptions"), &descriptions);
+    }
+}
+
+#[contract]
 pub struct DelegationContract;
 
 #[contractimpl]
@@ -766,6 +818,8 @@ impl DelegationContract {
 
     pub fn delegate(&self, env: &Env, delegator: Address, representative: Address) {
         delegator.require_auth();
+        // Self-delegation stores a meaningless mapping and adds cost to every
+        // `get_voting_power` walk, so reject it outright.
         if delegator == representative {
             panic!("Cannot delegate to self");
         }
@@ -836,7 +890,7 @@ impl DelegationContract {
 pub struct Proposal {
     pub id: u32,
     pub author: Address,
-    pub title: Symbol,
+    pub title: String,
     /// Link to the full proposal text (e.g. an `ipfs://` or `https://` URI).
     /// Empty when the proposal was created without one.
     pub reference_uri: String,
@@ -877,7 +931,7 @@ impl GovernanceContract {
         env.storage().instance().set(&Symbol::new(&env, "has_voted"), &Map::<(u32, Address), bool>::new(&env));
     }
 
-    pub fn create_proposal(&self, env: &Env, author: Address, title: Symbol, duration: u64) {
+    pub fn create_proposal(&self, env: &Env, author: Address, title: String, duration: u64) {
         self.create_proposal_with_uri(env, author, title, duration, String::from_str(env, ""));
     }
 
@@ -887,11 +941,17 @@ impl GovernanceContract {
         &self,
         env: &Env,
         author: Address,
-        title: Symbol,
+        title: String,
         duration: u64,
         reference_uri: String,
     ) {
         author.require_auth();
+        if title.len() == 0 {
+            panic!("Proposal title cannot be empty");
+        }
+        if title.len() > MAX_PROPOSAL_TITLE_BYTES {
+            panic!("Proposal title exceeds 256 bytes");
+        }
 
         let current_time = env.ledger().timestamp();
         let mut proposal_count: u32 = env.storage().instance().get(&Symbol::new(&env, "proposal_count")).unwrap_or(0);
@@ -1118,18 +1178,6 @@ impl QuoteLockContract {
         }
         if quote.creator != executor {
             panic!("Only quote creator can execute");
-        }
-        quote.executed = true;
-        quotes.set(id, quote.clone());
-        env.storage().instance().set(&"quotes", &quotes);
-        quote
-    }
-
-    pub fn get_quote(env: Env, id: Symbol) -> LockedQuote {
-        let quotes: Map<Symbol, LockedQuote> = env.storage().instance().get(&"quotes").unwrap_or_else(|| panic!("Quote not found"));
-        quotes.get(id).unwrap_or_else(|| panic!("Quote not found"))
-    }
-}
         }
         quote.executed = true;
         quotes.set(id, quote.clone());

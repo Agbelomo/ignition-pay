@@ -2,20 +2,14 @@
 extern crate std;
 
 use crate::{
-    IgnitionPayContract, IgnitionPayContractClient,
+    DelegationContract, DelegationContractClient, GovernanceContract, GovernanceContractClient,
+    IgnitionPayContract, IgnitionPayContractClient, MultiOracleContract, MultiOracleContractClient,
+    QuoteLockContract, QuoteLockContractClient, TokenMetadataContract, TokenMetadataContractClient,
     WrappedAssetBridgeContract, WrappedAssetBridgeContractClient,
-    TokenMetadataContract, TokenMetadataContractClient,
-    GovernanceContract, GovernanceContractClient,
 };
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
-    Address, Env, Symbol,
-    DelegationContract, DelegationContractClient, IgnitionPayContract, IgnitionPayContractClient,
-    MultiOracleContract, MultiOracleContractClient, QuoteLockContract, QuoteLockContractClient,
-};
-use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo},
-    Address, Env, Symbol, Vec,
+    Address, Env, String, Symbol, Vec,
 };
 
 fn create_contract(env: &Env) -> IgnitionPayContractClient {
@@ -384,7 +378,7 @@ fn test_governance_create_proposal() {
     contract.initialize(&admin, &token);
     env.mock_all_auths();
 
-    let title = Symbol::new(&env, "Proposal 1");
+    let title = String::from_str(&env, "Proposal 1");
     contract.create_proposal(&author, &title, &1000);
 
     assert_eq!(contract.get_proposal_count(), 1);
@@ -406,8 +400,8 @@ fn test_governance_proposal_count_increments() {
     contract.initialize(&admin, &token);
     env.mock_all_auths();
 
-    let title1 = Symbol::new(&env, "Proposal 1");
-    let title2 = Symbol::new(&env, "Proposal 2");
+    let title1 = String::from_str(&env, "Proposal 1");
+    let title2 = String::from_str(&env, "Proposal 2");
     contract.create_proposal(&author, &title1, &1000);
     contract.create_proposal(&author, &title2, &2000);
 
@@ -438,7 +432,7 @@ fn test_governance_execute_before_end() {
     contract.initialize(&admin, &token);
     env.mock_all_auths();
 
-    let title = Symbol::new(&env, "Proposal 1");
+    let title = String::from_str(&env, "Proposal 1");
     contract.create_proposal(&author, &title, &1000);
     contract.execute_proposal(&1);
 }
@@ -455,7 +449,7 @@ fn test_governance_double_execute() {
     contract.initialize(&admin, &token);
     env.mock_all_auths();
 
-    let title = Symbol::new(&env, "Proposal 1");
+    let title = String::from_str(&env, "Proposal 1");
     contract.create_proposal(&author, &title, &1000);
 
     // Fast forward past voting period
@@ -479,7 +473,7 @@ fn test_governance_get_vote_tally_initial() {
     contract.initialize(&admin, &token);
     env.mock_all_auths();
 
-    let title = Symbol::new(&env, "Proposal 1");
+    let title = String::from_str(&env, "Proposal 1");
     contract.create_proposal(&author, &title, &1000);
 
     let (for_votes, against_votes) = contract.get_vote_tally(&1);
@@ -499,7 +493,7 @@ fn test_governance_has_voted_initial() {
     contract.initialize(&admin, &token);
     env.mock_all_auths();
 
-    let title = Symbol::new(&env, "Proposal 1");
+    let title = String::from_str(&env, "Proposal 1");
     contract.create_proposal(&author, &title, &1000);
 
     assert_eq!(contract.has_voted(&1, &voter), false);
@@ -765,4 +759,92 @@ fn test_batch_send_emits_payout_sent_per_recipient() {
 
     // The original batch_payment_sent summary event must still be present exactly once.
     assert_eq!(batch_events.len(), 1, "expected exactly 1 batch_payment_sent summary event");
+}
+
+#[test]
+#[should_panic(expected = "Cannot delegate to self")]
+fn test_delegation_rejects_self_delegation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::random(&env);
+    let voter = Address::random(&env);
+    let contract = DelegationContractClient::new(
+        &env,
+        &env.register_contract(None, DelegationContract),
+    );
+
+    contract.initialize(&admin);
+    contract.delegate(&voter, &voter);
+}
+
+#[test]
+fn test_governance_accepts_long_human_readable_title() {
+    let env = Env::default();
+    let admin = Address::random(&env);
+    let token = Address::random(&env);
+    let author = Address::random(&env);
+    let contract = create_governance_contract(&env);
+
+    contract.initialize(&admin, &token);
+    env.mock_all_auths();
+
+    let title = String::from_str(&env, "Fund Q4 infrastructure reserve multisig");
+    contract.create_proposal(&author, &title, &1000);
+    assert_eq!(contract.get_proposal(&1).title, title);
+}
+
+#[test]
+#[should_panic(expected = "Proposal title exceeds 256 bytes")]
+fn test_governance_rejects_oversized_title() {
+    let env = Env::default();
+    let admin = Address::random(&env);
+    let token = Address::random(&env);
+    let author = Address::random(&env);
+    let contract = create_governance_contract(&env);
+
+    contract.initialize(&admin, &token);
+    env.mock_all_auths();
+
+    let title = String::from_str(&env, &"a".repeat(257));
+    contract.create_proposal(&author, &title, &1000);
+}
+
+#[test]
+#[should_panic(expected = "Proposal title cannot be empty")]
+fn test_governance_rejects_empty_title() {
+    let env = Env::default();
+    let admin = Address::random(&env);
+    let token = Address::random(&env);
+    let author = Address::random(&env);
+    let contract = create_governance_contract(&env);
+
+    contract.initialize(&admin, &token);
+    env.mock_all_auths();
+
+    contract.create_proposal(&author, &String::from_str(&env, ""), &1000);
+}
+
+#[test]
+fn test_price_feed_max_deviation_defaults_and_is_configurable() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let feed_admin = Address::random(&env);
+    let feed_contract = create_price_feed_contract(&env);
+    feed_contract.initialize(&feed_admin);
+
+    assert_eq!(feed_contract.get_max_deviation_bps(), 5_000);
+    feed_contract.set_max_deviation_bps(&1_000);
+    assert_eq!(feed_contract.get_max_deviation_bps(), 1_000);
+}
+
+#[test]
+#[should_panic(expected = "Deviation must be between 1 and 10000 bps")]
+fn test_price_feed_rejects_zero_max_deviation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let feed_admin = Address::random(&env);
+    let feed_contract = create_price_feed_contract(&env);
+    feed_contract.initialize(&feed_admin);
+
+    feed_contract.set_max_deviation_bps(&0);
 }
