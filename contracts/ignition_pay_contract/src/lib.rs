@@ -619,8 +619,17 @@ impl WrappedAssetBridgeContract {
         if current < amount {
             panic!("Insufficient wrapped balance");
         }
-        user_balances.set(native_asset.clone(), current - amount);
-        wrapped_balances.set(caller.clone(), user_balances);
+        if current == amount {
+            user_balances.remove(native_asset.clone());
+            if user_balances.is_empty() {
+                wrapped_balances.remove(caller.clone());
+            } else {
+                wrapped_balances.set(caller.clone(), user_balances);
+            }
+        } else {
+            user_balances.set(native_asset.clone(), current - amount);
+            wrapped_balances.set(caller.clone(), user_balances);
+        }
         env.storage().instance().set(&Symbol::new(&env, "wrapped_balances"), &wrapped_balances);
 
         env.events().publish(
